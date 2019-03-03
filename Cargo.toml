@@ -1,0 +1,11 @@
+[package]
+name = "bot_votes"
+version = "0.1.0"
+authors = ["sergentanguc"]
+edition = "2018"
+
+[dependencies]
+reqwest = "0.9.10"
+hyper = "0.12.24"
+http = "0.1.16"
+futures-timer = "0.1.1"
