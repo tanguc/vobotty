@@ -2,6 +2,7 @@ pub mod amakna;
 
 use std::time::Instant;
 use std::collections::hash_map::HashMap;
+use reqwest::RedirectPolicy;
 
 /// Metadata of running engine which contains all details
 pub struct EngineSession {
@@ -15,7 +16,9 @@ impl EngineSession {
     pub fn new(account: Account) -> Result<Self, String> {
         println!("Creating a new Amakna EngineExecutor");
 
-        let client = reqwest::Client::builder().build();
+        let client = reqwest::Client::builder()
+            .redirect(RedirectPolicy::none())
+            .build();
         match client {
             Ok(client) => {
                 println!("Client created.");
@@ -47,7 +50,7 @@ impl EngineSession {
 
 /// Minimal behaviours of BotEngine
 pub trait EngineExecutor where {
-    fn run(&self) -> Result<bool, String>;
+    fn run(&mut self) -> Result<bool, String>;
     fn get_website() -> Website;
 }
 
@@ -72,8 +75,8 @@ impl Account {
     /// Convert login request payload to hash map
     pub fn get_param_map(&self) -> HashMap<String, String> {
         let mut hash_map: HashMap<String, String> = HashMap::new();
-        hash_map.insert("email".to_string(), self.email.clone());
-        hash_map.insert("password".to_string(), self.password.clone());
+        hash_map.insert("user_name".to_string(), self.email.clone());
+        hash_map.insert("user_password".to_string(), self.password.clone());
 
         hash_map
     }
@@ -87,6 +90,7 @@ pub struct Website {
     host: String,
     login_endpoint_path: String,
     vote_endpoint_path: String,
+    index_endpoint_path: String,
 }
 
 /// Different captcha which existing to protect actions
