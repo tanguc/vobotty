@@ -42,7 +42,7 @@ impl Account {
             nickname,
             password,
             voted_at: None,
-            disabled: false
+            disabled: false,
         }
     }
 
@@ -73,11 +73,11 @@ pub enum AccountRepositoryError {
     GenericError,
     ErrorBatchItems,
     NoMatchingItem,
+    ErrorDuringBatchGetItemRequest,
+    EmptyResponseForDomain,
 }
 
 impl AccountRepository {
-
-    ///
     /// create a new repository of accounts
     pub fn new(domain: &str) -> Self {
         let _ = env_logger::try_init();
@@ -91,50 +91,52 @@ impl AccountRepository {
         }
     }
 
-    ///
-    /// load accounts from dynamodb
-    pub fn load_accounts(&mut self) -> Result<Vec<Account>, AccountRepositoryError> {
-
-        println!("Load accounts from dynamodb");
-
+    /// Print credentials for debug purposes
+    fn print_credentials_debug() {
         let default_cred_provider =
-            DefaultCredentialsProvider::new().map_err(| err| {
-                AccountRepositoryError::GenericError
-            })?;
+            DefaultCredentialsProvider::new().map_err(|err| {
+                eprintln!("Cannot create default credentials provider");
+                ()
+            });
+        match default_cred_provider {
+            Ok(default_cred_provider ) => {
+                let cred_future = default_cred_provider.credentials();
 
-        let cred_future = default_cred_provider.credentials();
+                let cred_res = cred_future.then(|fetched_cred| {
+                    match fetched_cred {
+                        Ok(ref cred) => {
+                            println!("Actual default credentials : ");
+                            println!("ACCESS TOKEN : {}", cred.aws_access_key_id());
+                            println!("SECRET TOKEN : {}", cred.aws_secret_access_key());
+                        }
+                        Err(_) => {
+                            println!("Impossible to print aws credentials");
+                        }
+                    }
+                    fetched_cred
+                }).wait();
 
-        let cred_res = cred_future.then(| fetched_cred | {
-
-            match fetched_cred {
-                Ok(ref cred) => {
-                    println!("Actual default credentials : ");
-                    println!("ACCESS TOKEN : {}", cred.aws_access_key_id());
-                    println!("SECRET TOKEN : {}", cred.aws_secret_access_key());
-                },
-                Err(_) => {
-                    println!("Impossible to print aws credentials");
+                match cred_res {
+                    Ok(cred) => {
+                        println!("Actual default credentials : ");
+                        println!("ACCESS TOKEN : {}", cred.aws_access_key_id());
+                        println!("SECRET TOKEN : {}", cred.aws_secret_access_key());
+                    }
+                    Err(_) => {
+                        eprintln!("impossible to get credentials");
+                    }
                 }
-            }
-            fetched_cred
-        }).wait();
-
-        match cred_res {
-            Ok(cred) => {
-                println!("Actual default credentials : ");
-                println!("ACCESS TOKEN : {}", cred.aws_access_key_id());
-                println!("SECRET TOKEN : {}", cred.aws_secret_access_key());
             },
-            Err(_) => {
-                eprintln!("impossible to get credentials");
-            }
+            Err(_) => { }
         }
+    }
 
-
-
-
-        let mut account_items_pk_attr: HashMap<String, AttributeValue> = HashMap::new();
-        account_items_pk_attr.insert(TABLE_ACCOUNTS_PRIMARY_KEY.into(), AttributeValue {
+    /// Retrieve all accounts data related to the domain
+    /// The attribute name of the item is DATA_ATTRIBUTE_KEY
+    /// Returns the payload in JSON format
+    fn retrieve_data(&self) -> Result<String, AccountRepositoryError> {
+        let mut input_retrieve_domain_key: HashMap<String, AttributeValue> = HashMap::new();
+        input_retrieve_domain_key.insert(TABLE_ACCOUNTS_PRIMARY_KEY.into(), AttributeValue {
             b: None,
             bool: None,
             bs: None,
@@ -144,64 +146,73 @@ impl AccountRepository {
             ns: None,
             null: None,
             s: Some(self.domain.clone()),
-            ss: None
+            ss: None,
         });
 
-        let mut accounts_from_domain_input: HashMap<String, KeysAndAttributes> = HashMap::new();
-        accounts_from_domain_input
+        let mut batch_retrieve_domain_from_table: HashMap<String, KeysAndAttributes> = HashMap::new();
+        batch_retrieve_domain_from_table
             .insert(TABLE_ACCOUNTS_NAME.into(),
                     KeysAndAttributes {
                         attributes_to_get: None,
                         consistent_read: None,
                         expression_attribute_names: None,
-                        keys: vec![account_items_pk_attr],
+                        keys: vec![input_retrieve_domain_key],
                         projection_expression: None,
                     });
 
-        println!("BatchGetItemInput payload : {:?}", accounts_from_domain_input);
+        println!("BatchGetItemInput payload : {:?}", batch_retrieve_domain_from_table);
 
         let get_item_input = BatchGetItemInput {
-            request_items: accounts_from_domain_input,
-            return_consumed_capacity: None
+            request_items: batch_retrieve_domain_from_table,
+            return_consumed_capacity: None,
         };
 
 
-        let accounts =
-            self.dynamodb_client.batch_get_item(get_item_input).sync();
+        let batch_accounts = self.dynamodb_client
+            .batch_get_item(get_item_input)
+            .sync()
+            .map_err(|err| AccountRepositoryError::ErrorDuringBatchGetItemRequest)?;
 
-        println!("foobar1");
+        println!("God responses :o");
+        println!("Raw: {:?}", batch_accounts);
 
-        match accounts {
-            Ok(batch_items) => {
-                if let Some(resps) = batch_items.responses {
-                    resps.get(self.domain.as_str())
-                        .iter()
-                        .for_each(| item | {
-                            item.iter().for_each( | item_attributes | {
-                                for (item_attrib_key, item_attrib_val) in item_attributes {
-                                    println!("item attribute key {:?} || val {:?}",
-                                             item_attrib_key, item_attrib_val);
-                                }
-                            })
-                    });
-                    return Ok(vec![
-                        Account::new("toto".to_string(), "mdr".to_string())
-                    ]);
-                } else {
-                    eprintln!("no items fetched");
-                    Err(AccountRepositoryError::NoMatchingItem)
-                }
-            },
-            Err(batch_err) => {
-                eprintln!("Error during batch get item: {:?}", batch_err.description());
-                match batch_err {
-                    BatchGetItemError::Unknown(buffed_http_resp) => {
-                        println!("Body err = {}", from_utf8(&buffed_http_resp.body).unwrap());
-                    }
-                    _ => {}
-                }
-                Err(AccountRepositoryError::GenericError)
-            }
+        if let Some(domain_accounts) = batch_accounts.responses {
+            domain_accounts.get(TABLE_ACCOUNTS_NAME)
+                .iter()
+                .for_each(|domain_item| {
+                    domain_item.iter().filter(|domain_item_attribute| {
+                        domain_item_attribute.contains_key(DATA_ATTRIBUTE_KEY)
+                    }).for_each(|domain_item_data_attribute| {
+                        println!("Actual DATA payload : {:?}",
+                                 domain_item_data_attribute.get(DATA_ATTRIBUTE_KEY));
+                        let domain_item_data_attribute = domain_item_data_attribute
+                            .get(DATA_ATTRIBUTE_KEY);
+                        match domain_item_data_attribute {
+                            Some(data_value) => {
+                                println!("JSON payload : {:?}", data_value.s.);
+                            },
+                            None => {
+                                eprintln!("Cannot retrieve data value");
+                            }
+                        }
+                    })
+                });
+            Ok(String::from("toto"))
+        } else {
+            eprintln!("Dynamodb returned empty collections for accounts table");
+            Err(AccountRepositoryError::EmptyResponseForDomain)
         }
+    }
+
+
+    ///
+    /// load accounts from dynamodb
+    pub fn load_accounts(&mut self) -> Result<Vec<Account>, AccountRepositoryError> {
+        let mut accounts: Vec<Account> = Vec::new();
+        println!("Load accounts from dynamodb");
+
+        self.retrieve_data();
+
+        Ok(accounts)
     }
 }
