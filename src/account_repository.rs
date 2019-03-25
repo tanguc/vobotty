@@ -10,6 +10,9 @@ use rusoto_core::Region;
 use rusoto_credential::DefaultCredentialsProvider;
 use std::str::from_utf8;
 use std::error::Error;
+use rusoto_core::HttpClient;
+use rusoto_credential::ProfileProvider;
+use std::env;
 
 static TABLE_ACCOUNTS_NAME: &'static str = "accounts";
 static TABLE_ACCOUNTS_PRIMARY_KEY: &'static str = "domain";
@@ -28,7 +31,7 @@ pub struct Account {
 ///
 /// list of available accounts
 pub struct AccountRepository {
-    accounts: Vec<Account>,
+    accounts: Box<Vec<Account>>,
     dynamodb_client: DynamoDbClient,
     //represent the website of which the repository is belongs to
     domain: String,
@@ -73,29 +76,39 @@ pub enum AccountRepositoryError {
     GenericError,
     ErrorBatchItems,
     NoMatchingItem,
+    CannotLoadSpecificCredentialsProfile,
+    CannotCreateHttpClient,
 }
 
 impl AccountRepository {
 
     ///
     /// create a new repository of accounts
-    pub fn new(domain: &str) -> Self {
+    pub fn new(domain: &str) -> Result<Self, AccountRepositoryError> {
         let _ = env_logger::try_init();
 
         println!("create a new accountrepository");
         println!("Actual domain name is : {}", domain);
-        Self {
-            accounts: vec![],
-            dynamodb_client: DynamoDbClient::new(Region::EuWest1),
+        let request_dispatcher = HttpClient::new()
+            .map_err(|err| AccountRepositoryError::CannotCreateHttpClient)?;
+        let aws_credentials_provider = ProfileProvider::new()
+            .map_err(| err | AccountRepositoryError::CannotLoadSpecificCredentialsProfile)?;
+
+        Ok(Self {
+            accounts: Box::new(Vec::new()),
+            dynamodb_client: DynamoDbClient::new_with(
+                request_dispatcher,
+                aws_credentials_provider,
+                Region::EuWest1),
             domain: String::from(domain),
-        }
+        })
     }
 
     ///
     /// load accounts from dynamodb
     pub fn load_accounts(&mut self) -> Result<Vec<Account>, AccountRepositoryError> {
 
-        println!("Load accounts from dynamodb");
+        println!("Load batch_result_accounts from dynamodb");
 
         let default_cred_provider =
             DefaultCredentialsProvider::new().map_err(| err| {
@@ -147,8 +160,8 @@ impl AccountRepository {
             ss: None
         });
 
-        let mut accounts_from_domain_input: HashMap<String, KeysAndAttributes> = HashMap::new();
-        accounts_from_domain_input
+        let mut accounts_from_domain: HashMap<String, KeysAndAttributes> = HashMap::new();
+        accounts_from_domain
             .insert(TABLE_ACCOUNTS_NAME.into(),
                     KeysAndAttributes {
                         attributes_to_get: None,
@@ -158,50 +171,34 @@ impl AccountRepository {
                         projection_expression: None,
                     });
 
-        println!("BatchGetItemInput payload : {:?}", accounts_from_domain_input);
+        println!("BatchGetItemInput payload : {:?}", accounts_from_domain);
 
-        let get_item_input = BatchGetItemInput {
-            request_items: accounts_from_domain_input,
+        let batch_domain_accounts = BatchGetItemInput {
+            request_items: accounts_from_domain,
             return_consumed_capacity: None
         };
 
 
-        let accounts =
-            self.dynamodb_client.batch_get_item(get_item_input).sync();
+        let batch_result_accounts =
+            self.dynamodb_client
+                .batch_get_item(batch_domain_accounts)
+                .sync()
+                .map_err(|err| AccountRepositoryError::GenericError)?;
 
         println!("foobar1");
 
-        match accounts {
-            Ok(batch_items) => {
-                if let Some(resps) = batch_items.responses {
-                    resps.get(self.domain.as_str())
-                        .iter()
-                        .for_each(| item | {
-                            item.iter().for_each( | item_attributes | {
-                                for (item_attrib_key, item_attrib_val) in item_attributes {
-                                    println!("item attribute key {:?} || val {:?}",
-                                             item_attrib_key, item_attrib_val);
-                                }
-                            })
-                    });
-                    return Ok(vec![
-                        Account::new("toto".to_string(), "mdr".to_string())
-                    ]);
-                } else {
-                    eprintln!("no items fetched");
-                    Err(AccountRepositoryError::NoMatchingItem)
-                }
-            },
-            Err(batch_err) => {
-                eprintln!("Error during batch get item: {:?}", batch_err.description());
-                match batch_err {
-                    BatchGetItemError::Unknown(buffed_http_resp) => {
-                        println!("Body err = {}", from_utf8(&buffed_http_resp.body).unwrap());
-                    }
-                    _ => {}
-                }
-                Err(AccountRepositoryError::GenericError)
+        let mut accounts: Vec<Account> = Vec::new();
+
+        if let Some(accounts_items) = batch_result_accounts.responses {
+            if let accounts_items = accounts_items.get(TABLE_ACCOUNTS_PRIMARY_KEY) {
+                println!("Actuals accounts items : {:?}", accounts_items);
+            } else {
+                eprintln!("There aren't any data for the ")
             }
+        } else {
+            eprintln!("There aren't any accounts in the table for this domain name");
         }
+
+        Ok(accounts)
     }
 }

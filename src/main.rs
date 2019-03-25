@@ -29,7 +29,9 @@ fn main() {
     match vpn {
         Ok(_) => {
 
-            let mut account_repository = AccountRepository::new("amakna.us");
+            let mut account_repository = AccountRepository::new("amakna.us")
+                .map_err( |err| eprintln!("Impossible to initialize the account repository"))
+                .unwrap();
 
             let result = account_repository.load_accounts();
 
