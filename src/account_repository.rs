@@ -18,6 +18,7 @@ static DATA_ATTRIBUTE_KEY: &'static str = "data";
 ///
 /// represent an account for which to vote
 ///
+#[derive(Serialize, Deserialize)]
 pub struct Account {
     nickname: String,
     password: String,

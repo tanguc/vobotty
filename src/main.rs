@@ -7,6 +7,9 @@ extern crate chrono;
 extern crate rusoto_dynamodb;
 extern crate rusoto_core;
 
+#[macro_use]
+extern crate serde;
+
 use crate::engine::EngineSession;
 use crate::engine::amakna::AmaknaBotEngine;
 use crate::engine::EngineExecutor;
