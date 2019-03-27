@@ -4,12 +4,13 @@ use rusoto_dynamodb::{DynamoDbClient, KeysAndAttributes, DynamoDb, BatchGetItemI
 use std::collections::HashMap;
 use env_logger;
 use futures::future::Future;
-use rusoto_core::Region;
+use rusoto_core::{Region, ProvideAwsCredentials, CredentialsError};
 use std::str::from_utf8;
 use std::error::Error;
 use rusoto_core::HttpClient;
 use std::env;
 use rusoto_core::DefaultCredentialsProvider;
+use rusoto_core::credential::AwsCredentials;
 
 static TABLE_ACCOUNTS_NAME: &'static str = "accounts";
 static TABLE_ACCOUNTS_PRIMARY_KEY: &'static str = "domain";
@@ -91,7 +92,14 @@ impl AccountRepository {
         let request_dispatcher = HttpClient::new()
             .map_err(|err| AccountRepositoryError::CannotCreateHttpClient)?;
 
-        let env_creds_provider = rusoto_core::credential::EnvironmentProvider::default();
+        let env_creds_provider: Box<ProvideAwsCredentials<Future = Future<Item = AwsCredentials, Error = CredentialsError>>> =
+            if env::var("AWS_ACCESS_KEY_ID").is_ok() &&
+            env::var("AWS_SECRET_ACCESS_KEY").is_ok() {
+            Box::new(rusoto_core::credential::EnvironmentProvider::default())
+        } else {
+            Box::new(DefaultCredentialsProvider::new()
+                .map_err(|err| AccountRepositoryError::CouldNotGetCredsFromEnvironment)?)
+        };
 
         Ok(Self {
             accounts: Box::new(Vec::new()),
@@ -161,7 +169,6 @@ impl AccountRepository {
                             .get(DATA_ATTRIBUTE_KEY);
                         match domain_item_data_attribute {
                             Some(data_value) => {
-
                                 println!("JSON payload : {:?}", data_value.s);
                             },
                             None => {
