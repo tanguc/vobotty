@@ -9,6 +9,7 @@ extern crate rusoto_core;
 
 #[macro_use]
 extern crate serde;
+extern crate serde_json;
 
 use crate::engine::EngineSession;
 use crate::engine::amakna::AmaknaBotEngine;

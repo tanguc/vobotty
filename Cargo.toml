@@ -17,6 +17,7 @@ log = "0.4.0"
 env_logger = "0.6.1"
 futures = "0.1.25"
 serde = {version = "1.0.89", features = ["derive"] }
+serde_json = "1.0.39"
 
 [profile.dev]
 codegen-units = 16

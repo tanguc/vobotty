@@ -16,10 +16,8 @@ static TABLE_ACCOUNTS_NAME: &'static str = "accounts";
 static TABLE_ACCOUNTS_PRIMARY_KEY: &'static str = "domain";
 static DATA_ATTRIBUTE_KEY: &'static str = "data";
 
-///
-/// represent an account for which to vote
-///
-#[derive(Serialize, Deserialize)]
+/// Account belongs to a domain
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Account {
     nickname: String,
     password: String,
@@ -27,17 +25,15 @@ pub struct Account {
     disabled: bool,
 }
 
-///
 /// list of available accounts
 pub struct AccountRepository {
     accounts: Box<Vec<Account>>,
-    dynamodb_client: DynamoDbClient,
+    dynamodb_client: Box<DynamoDbClient>,
     //represent the website of which the repository is belongs to
     domain: String,
 }
 
 impl Account {
-    ///
     /// create a new account, by default the account is enabled
     pub fn new(nickname: String, password: String) -> Self {
         Account {
@@ -48,27 +44,23 @@ impl Account {
         }
     }
 
-    ///
     /// set the vote attribute to now
     pub fn voted_now(&mut self) {
         self.voted_at = Some(Utc::now())
     }
 
-    ///
     /// disable the account
     pub fn disable(&mut self) {
         self.disabled = true
     }
 
-    ///
     /// check if the account can vote
     pub fn can_vote() {
         unimplemented!()
     }
 }
 
-///
-/// different errors that could happens in the accountrepository context
+/// Errors
 pub enum AccountRepositoryError {
     FileNotExist,
     CannotLoadFile,
@@ -80,10 +72,14 @@ pub enum AccountRepositoryError {
     ErrorDuringBatchGetItemRequest,
     EmptyResponseForDomain,
     CouldNotGetCredsFromEnvironment,
+    CannotParseAccountsFromJson,
+    NoData,
 }
 
 impl AccountRepository {
-    /// create a new repository of accounts
+    /// Create a new repository(DAO) of accounts
+    /// If credentials are set in the env, it tries to login with them, otherwise it uses
+    /// the .credentials file
     pub fn new(domain: &str) -> Result<Self, AccountRepositoryError> {
         let _ = env_logger::try_init();
 
@@ -92,21 +88,21 @@ impl AccountRepository {
         let request_dispatcher = HttpClient::new()
             .map_err(|err| AccountRepositoryError::CannotCreateHttpClient)?;
 
-        let env_creds_provider: Box<ProvideAwsCredentials<Future = Future<Item = AwsCredentials, Error = CredentialsError>>> =
+        //if credentials are set in the env we use them first
+        let dynamodb_client =
             if env::var("AWS_ACCESS_KEY_ID").is_ok() &&
-            env::var("AWS_SECRET_ACCESS_KEY").is_ok() {
-            Box::new(rusoto_core::credential::EnvironmentProvider::default())
-        } else {
-            Box::new(DefaultCredentialsProvider::new()
-                .map_err(|err| AccountRepositoryError::CouldNotGetCredsFromEnvironment)?)
-        };
+                env::var("AWS_SECRET_ACCESS_KEY").is_ok() {
+                Box::new(DynamoDbClient::new_with(
+                    request_dispatcher,
+                    rusoto_core::credential::EnvironmentProvider::default(),
+                    Region::EuWest1))
+            } else {
+                Box::new(DynamoDbClient::new(Region::EuWest1))
+            };
 
         Ok(Self {
             accounts: Box::new(Vec::new()),
-            dynamodb_client: DynamoDbClient::new_with(
-                request_dispatcher,
-                env_creds_provider,
-                Region::EuWest1),
+            dynamodb_client,
             domain: String::from(domain),
         })
     }
@@ -157,42 +153,59 @@ impl AccountRepository {
         println!("Raw: {:?}", batch_accounts);
 
         if let Some(domain_accounts) = batch_accounts.responses {
+            let mut accounts_data = Err(AccountRepositoryError::NoData);
             domain_accounts.get(TABLE_ACCOUNTS_NAME)
                 .iter()
-                .for_each(|domain_item| {
-                    domain_item.iter().filter(|domain_item_attribute| {
-                        domain_item_attribute.contains_key(DATA_ATTRIBUTE_KEY)
-                    }).for_each(|domain_item_data_attribute| {
-                        println!("Actual DATA payload : {:?}",
-                                 domain_item_data_attribute.get(DATA_ATTRIBUTE_KEY));
-                        let domain_item_data_attribute = domain_item_data_attribute
-                            .get(DATA_ATTRIBUTE_KEY);
-                        match domain_item_data_attribute {
-                            Some(data_value) => {
-                                println!("JSON payload : {:?}", data_value.s);
-                            },
-                            None => {
-                                eprintln!("Cannot retrieve data value");
-                            }
+                .flat_map(|arg| arg.iter())
+                .filter(|domain_item_attribute| {
+                    domain_item_attribute.contains_key(DATA_ATTRIBUTE_KEY)
+                })
+                .for_each(|domain_item_data_attribute| {
+                    println!("Actual DATA payload : {:?}",
+                             domain_item_data_attribute.get(DATA_ATTRIBUTE_KEY));
+                    let domain_item_data_attribute = domain_item_data_attribute
+                        .get(DATA_ATTRIBUTE_KEY);
+                    match domain_item_data_attribute {
+                        Some(data_value) => {
+                            println!("JSON payload : {:?}", data_value.s);
+                            accounts_data = data_value.s.clone()
+                                .ok_or_else(|| AccountRepositoryError::NoData);
+                        },
+                        None => {
+                            eprintln!("Cannot retrieve data value");
                         }
-                    })
+                    }
                 });
-            Ok(String::from("toto"))
+            accounts_data
         } else {
             eprintln!("Dynamodb returned empty collections for accounts table");
             Err(AccountRepositoryError::EmptyResponseForDomain)
         }
     }
 
+    /// Parse JSON payload
+    /// Return a list of accounts
+    fn parse(&self, payload: &str) -> Result<Box<Vec<Account>>, AccountRepositoryError> {
+        println!("Trying to parse JSON payload");
 
-    ///
+
+        let accounts: Vec<Account> = serde_json::from_str(payload)
+            .map_err(|err| {
+                eprintln!("Got error during deserialization of JSON which contains account\
+                , reason => {:?}", err);
+                AccountRepositoryError::CannotParseAccountsFromJson
+            })?;
+        println!("Parsed Vec accounts = {:?}", accounts);
+
+        Ok(Box::new(accounts))
+    }
+
     /// load accounts from dynamodb
-    pub fn load_accounts(&mut self) -> Result<Vec<Account>, AccountRepositoryError> {
+    pub fn load_accounts(&mut self) -> Result<Box<Vec<Account>>, AccountRepositoryError> {
         let mut accounts: Vec<Account> = Vec::new();
         println!("Load accounts from dynamodb");
 
-        self.retrieve_data();
-
-        Ok(accounts)
+        let json_accounts = self.retrieve_data()?;
+        self.parse(json_accounts.as_str())
     }
 }
