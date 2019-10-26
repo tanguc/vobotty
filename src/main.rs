@@ -18,11 +18,12 @@ use crate::account_repository::AccountRepository;
 
 fn main() {
     let account = engine::Account::new(
-        "morter1".to_string(), "s45LrPVqijS1".to_string());
+        "fakeAccount".to_string(),
+        "fakeAccountPass".to_string());
 
     let vpn_account = vpn::VpnCredentials::new(
-        "sergen.tanguc@gmail.com".to_string(),
-        "oizjdofi".to_string());
+        "fakeAccount".to_string(),
+        "fakeAccountPass".to_string());
 
     let vpn =
         vpn::Vpn::new(vpn_account)
